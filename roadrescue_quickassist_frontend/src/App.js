@@ -97,6 +97,53 @@ async function tryNotify({ title, body }) {
   }
 }
 
+/**
+ * PUBLIC_INTERFACE
+ * Returns a normalized browser Notification permission state.
+ */
+function getNotificationPermissionState() {
+  if (typeof window === "undefined") return "unavailable";
+  if (!("Notification" in window)) return "unsupported";
+  return Notification.permission || "default";
+}
+
+/**
+ * Scaffolding helper: store which status notifications we've already emitted for a request.
+ * This prevents repeated notifications when users refresh or when the list polling re-renders.
+ */
+function loadNotifiedStatusMap() {
+  try {
+    const raw = localStorage.getItem("rrqa_notified_status");
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveNotifiedStatusMap(map) {
+  localStorage.setItem("rrqa_notified_status", JSON.stringify(map));
+}
+
+/**
+ * Emits a notification for a status transition if we haven't already emitted one for that request+status.
+ * Returns {notified: boolean, result?: tryNotify result}.
+ */
+async function notifyOnceForStatus({ requestId, nextStatus, title, body }) {
+  const key = `${requestId}:${nextStatus}`;
+  const map = loadNotifiedStatusMap();
+
+  if (map[key]) return { notified: false, skipped: "already_notified" };
+
+  const res = await tryNotify({ title, body });
+  // Mark as notified regardless of whether browser notifications are allowed, so we don't spam.
+  // In-app alerts still provide the UX feedback.
+  map[key] = true;
+  saveNotifiedStatusMap(map);
+
+  return { notified: res.ok, result: res };
+}
+
 function loadRequests() {
   try {
     const raw = localStorage.getItem("rrqa_requests");
@@ -173,11 +220,52 @@ function AppShell() {
   const [authUser, setAuthUser] = useState(() => loadAuthUser());
   const [alerts, setAlerts] = useState([]);
 
+  const [notifPermission, setNotifPermission] = useState(() => getNotificationPermissionState());
+
   const authed = Boolean(authUser);
 
   const addAlert = (type, message) => {
     setAlerts((prev) => [{ id: `${Date.now()}_${Math.random()}`, type, message }, ...prev].slice(0, 6));
   };
+
+  const requestNotifPermission = async () => {
+    const current = getNotificationPermissionState();
+    setNotifPermission(current);
+
+    if (current === "unsupported" || current === "unavailable") {
+      addAlert("info", "Browser notifications are not supported in this environment.");
+      return;
+    }
+
+    if (current === "granted") {
+      addAlert("info", "Notifications are already enabled.");
+      return;
+    }
+
+    if (current === "denied") {
+      addAlert("error", "Notifications are blocked. Enable them in your browser settings to receive updates.");
+      return;
+    }
+
+    const res = await tryNotify({
+      title: "RoadRescue",
+      body: "Notifications enabled. You’ll receive updates when your request status changes.",
+    });
+
+    // tryNotify requests permission when needed; reflect latest state after.
+    setNotifPermission(getNotificationPermissionState());
+
+    if (!res.ok) {
+      addAlert("info", "Notification permission not granted. Updates will still appear in-app.");
+    }
+  };
+
+  useEffect(() => {
+    // Keep permission state fresh when the tab regains focus (user may change it in browser settings).
+    const onFocus = () => setNotifPermission(getNotificationPermissionState());
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
 
   const onLogout = () => {
     clearAuthUser();
@@ -200,6 +288,14 @@ function AppShell() {
       { to: "/register", label: "Register" },
     ];
   }, [authed]);
+
+  const notifLabel = useMemo(() => {
+    if (notifPermission === "granted") return "Notifications: On";
+    if (notifPermission === "denied") return "Notifications: Blocked";
+    if (notifPermission === "default") return "Enable notifications";
+    if (notifPermission === "unsupported") return "Notifications: Unsupported";
+    return "Notifications";
+  }, [notifPermission]);
 
   return (
     <div className="rr-app">
@@ -227,6 +323,16 @@ function AppShell() {
           </nav>
 
           <div className="rr-topbarRight">
+            <button
+              className="rr-linkButton"
+              type="button"
+              onClick={requestNotifPermission}
+              title="Enable browser notifications for request status updates"
+              disabled={notifPermission === "unsupported" || notifPermission === "unavailable"}
+            >
+              {notifLabel}
+            </button>
+
             {authed ? (
               <>
                 <div className="rr-userChip" title={authUser?.email || "User"}>
@@ -962,10 +1068,12 @@ function RequestDetailPage({ authUser, addAlert, onStatusSimulated }) {
 
   const canView = request && request.userId === (authUser?.id || "unknown");
 
-  const updateRequestStatus = (nextStatus) => {
+  const updateRequestStatus = async (nextStatus) => {
     const all = loadRequests();
     const idx = all.findIndex((x) => x.id === id);
     if (idx === -1) return;
+
+    const prevStatus = all[idx]?.status;
 
     const now = new Date().toISOString();
     const updated = {
@@ -990,16 +1098,37 @@ function RequestDetailPage({ authUser, addAlert, onStatusSimulated }) {
     all[idx] = updated;
     saveRequests(all);
     setRequest(updated);
+
+    // Status transition hook (MVP): fire a browser notification when the status changes to ASSIGNED/COMPLETED.
+    // Deduped by requestId+status to avoid repeated popups across refreshes.
+    if (prevStatus !== nextStatus) {
+      if (nextStatus === "ASSIGNED") {
+        await notifyOnceForStatus({
+          requestId: id,
+          nextStatus,
+          title: "RoadRescue",
+          body: `A mechanic accepted your request ${id}.`,
+        });
+      }
+      if (nextStatus === "COMPLETED") {
+        await notifyOnceForStatus({
+          requestId: id,
+          nextStatus,
+          title: "RoadRescue",
+          body: `Your service for request ${id} has been completed.`,
+        });
+      }
+    }
   };
 
   const simulateMechanicAccept = async () => {
-    updateRequestStatus("ASSIGNED");
+    await updateRequestStatus("ASSIGNED");
     addAlert("success", "Simulated: mechanic accepted request (ASSIGNED).");
     await onStatusSimulated?.(`A mechanic accepted your request ${id}.`);
   };
 
   const simulateComplete = async () => {
-    updateRequestStatus("COMPLETED");
+    await updateRequestStatus("COMPLETED");
     addAlert("success", "Simulated: service completed (COMPLETED).");
     await onStatusSimulated?.(`Your service for request ${id} has been completed.`);
   };
