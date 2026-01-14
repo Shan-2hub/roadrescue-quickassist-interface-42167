@@ -11,6 +11,7 @@ import {
   useParams,
 } from "react-router-dom";
 import { LocationMap } from "./components/LocationMap";
+import MapView from "./components/MapView";
 
 const APP_TITLE = "RoadRescue";
 
@@ -994,7 +995,7 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
                 </div>
               </>
             }
-            right={<LocationMap lat={lat} lon={lng} />}
+            right={<MapView lat={typeof lat === "number" ? lat : null} lng={typeof lng === "number" ? lng : null} />}
           />
 
           <div className="rr-actions rr-actionsEnd">
