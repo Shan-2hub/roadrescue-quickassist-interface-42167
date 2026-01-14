@@ -528,6 +528,35 @@ body {
   background: rgba(16, 185, 129, 0.12);
 }
 
+/* Key/Value layout (Request detail) */
+.rr-kvGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.rr-kv {
+  border: 1px solid var(--rr-border);
+  background: rgba(249, 250, 251, 0.7);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.rr-k {
+  font-size: 11px;
+  font-weight: 900;
+  color: var(--rr-muted);
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+}
+
+.rr-v {
+  margin-top: 6px;
+  font-weight: 700;
+  color: var(--rr-text);
+  font-size: 13px;
+}
+
 /* Empty state */
 .rr-empty {
   padding: 22px 12px;
@@ -607,6 +636,9 @@ body {
     display: none; /* compact like many mobile navbars; can be enhanced later */
   }
   .rr-grid2 {
+    grid-template-columns: 1fr;
+  }
+  .rr-kvGrid {
     grid-template-columns: 1fr;
   }
   .rr-tableHeader {

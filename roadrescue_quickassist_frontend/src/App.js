@@ -846,12 +846,14 @@ function MyRequestsPage({ authUser }) {
       <div className="rr-pageHeader rr-pageHeaderRow">
         <div>
           <h1 className="rr-title">My requests</h1>
-          <div className="rr-subtitle">View your submitted requests and track their status.</div>
+          <div className="rr-subtitle">View requests you’ve submitted. Tap a request ID to see full details.</div>
         </div>
         <Link className="rr-btn rr-btnPrimary" to="/submit-request">
           New request
         </Link>
       </div>
+
+      {/* Per instructions: NO map visible on list view. */}
 
       <div className="rr-card rr-tableCard">
         <div className="rr-tableWrap" role="table" aria-label="Requests table">
@@ -876,13 +878,20 @@ function MyRequestsPage({ authUser }) {
                   <Link className="rr-textLink" to={`/requests/${r.id}`}>
                     {r.id}
                   </Link>
+                  <div className="rr-mutedSmall">{new Date(r.createdAt).toLocaleString()}</div>
                 </div>
+
                 <div role="cell">
-                  {r.vehicle?.make} {r.vehicle?.model} {r.vehicle?.year ? `(${r.vehicle.year})` : ""}
+                  <div>
+                    {r.vehicle?.make} {r.vehicle?.model} {r.vehicle?.year ? `(${r.vehicle.year})` : ""}
+                  </div>
+                  <div className="rr-mutedSmall">{r.vehicle?.licensePlate ? `Plate: ${r.vehicle.licensePlate}` : ""}</div>
                 </div>
+
                 <div role="cell">
                   <span className={`rr-badge rr-badge-${String(r.status || "").toLowerCase()}`}>{r.status}</span>
                 </div>
+
                 <div role="cell" className="rr-right">
                   <Link className="rr-btn rr-btnSmall rr-btnSecondary" to={`/requests/${r.id}`}>
                     View
@@ -905,9 +914,10 @@ function RequestDetailPage({ authUser, addAlert, onStatusSimulated }) {
     return r || null;
   });
 
-  // In the detail view, the screenshots show a map visible (current location).
+  // Detail view requirement: show map of the user's CURRENT location (not the original pinned breakdown location).
   const [currentLat, setCurrentLat] = useState(null);
   const [currentLng, setCurrentLng] = useState(null);
+  const [locError, setLocError] = useState(null);
 
   useEffect(() => {
     const r = loadRequests().find((x) => x.id === id);
@@ -915,14 +925,18 @@ function RequestDetailPage({ authUser, addAlert, onStatusSimulated }) {
   }, [id]);
 
   useEffect(() => {
-    if (!("geolocation" in navigator)) return;
+    if (!("geolocation" in navigator)) {
+      setLocError("Geolocation is not supported in this browser.");
+      return;
+    }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         setCurrentLat(pos.coords.latitude);
         setCurrentLng(pos.coords.longitude);
+        setLocError(null);
       },
-      () => {
-        // non-blocking
+      (err) => {
+        setLocError(err?.message || "Unable to fetch your current location.");
       },
       { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
     );
@@ -1004,9 +1018,7 @@ function RequestDetailPage({ authUser, addAlert, onStatusSimulated }) {
     <section className="rr-page">
       <div className="rr-pageHeader">
         <h1 className="rr-title">Request {request.id}</h1>
-        <div className="rr-subtitle">
-          Track details and status. (Map below shows your current location in this view.)
-        </div>
+        <div className="rr-subtitle">Status is updated as the mechanic accepts and completes the job (MVP simulated).</div>
       </div>
 
       <div className="rr-card rr-contentCard">
@@ -1021,6 +1033,11 @@ function RequestDetailPage({ authUser, addAlert, onStatusSimulated }) {
           <div className="rr-kv">
             <div className="rr-k">Created</div>
             <div className="rr-v">{new Date(request.createdAt).toLocaleString()}</div>
+          </div>
+
+          <div className="rr-kv">
+            <div className="rr-k">Updated</div>
+            <div className="rr-v">{request.updatedAt ? new Date(request.updatedAt).toLocaleString() : "-"}</div>
           </div>
 
           <div className="rr-kv">
@@ -1049,7 +1066,7 @@ function RequestDetailPage({ authUser, addAlert, onStatusSimulated }) {
         <div className="rr-divider" />
 
         <div className="rr-kv">
-          <div className="rr-k">Submitted breakdown location</div>
+          <div className="rr-k">Submitted breakdown location (from request)</div>
           <div className="rr-v">
             {request.location?.addressText || "-"}{" "}
             {typeof request.location?.lat === "number" && typeof request.location?.lng === "number"
@@ -1058,7 +1075,16 @@ function RequestDetailPage({ authUser, addAlert, onStatusSimulated }) {
           </div>
         </div>
 
-        <div className="rr-mutedSmall rr-mt8">Map below (detail view): your current location right now.</div>
+        <div className="rr-divider" />
+
+        <div className="rr-kv">
+          <div className="rr-k">Your current location (live)</div>
+          <div className="rr-v">{locError ? <span className="rr-muted">{locError}</span> : formatLatLng(currentLat, currentLng) || "-"}</div>
+        </div>
+
+        <div className="rr-mutedSmall rr-mt8">
+          Map below shows your current location right now (not the original pinned breakdown point).
+        </div>
         <div className="rr-mt12">
           <MapEmbed lat={currentLat} lng={currentLng} />
         </div>
@@ -1095,7 +1121,7 @@ function RequestDetailPage({ authUser, addAlert, onStatusSimulated }) {
 
         <div className="rr-mutedSmall rr-mt12">
           Status flow (scaffold): OPEN → ASSIGNED → COMPLETED. In the full product, mechanic actions will update this
-          automatically via API.
+          automatically via API + push notifications.
         </div>
       </div>
     </section>
