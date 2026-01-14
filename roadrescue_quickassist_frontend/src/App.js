@@ -19,13 +19,18 @@ const APP_TITLE = "RoadRescue";
  * Generates a lightweight unique id for client-only request storage.
  * Not cryptographically secure; sufficient for MVP UI state.
  */
-function generateId() {
-  return `req_${Math.random().toString(36).slice(2, 7)}${Date.now().toString(36).slice(-4)}`;
+function generateId(prefix = "req") {
+  return `${prefix}_${Math.random().toString(36).slice(2, 7)}${Date.now().toString(36).slice(-4)}`;
 }
 
 function formatLatLng(lat, lng) {
   if (typeof lat !== "number" || !Number.isFinite(lat) || typeof lng !== "number" || !Number.isFinite(lng)) return "";
   return `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+}
+
+function formatMoney(amount) {
+  const n = typeof amount === "number" && Number.isFinite(amount) ? amount : 0;
+  return n.toLocaleString(undefined, { style: "currency", currency: "USD" });
 }
 
 /**
@@ -215,16 +220,136 @@ function clearAuthUser() {
   localStorage.removeItem("rrqa_auth_user");
 }
 
+/** -----------------------------
+ * Mechanic Portal (MVP localStorage)
+ * ------------------------------*/
+
+function loadMechanicSession() {
+  try {
+    const raw = localStorage.getItem("rrqa_mech_session");
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveMechanicSession(session) {
+  localStorage.setItem("rrqa_mech_session", JSON.stringify(session));
+}
+
+function clearMechanicSession() {
+  localStorage.removeItem("rrqa_mech_session");
+}
+
+function loadMechanics() {
+  try {
+    const raw = localStorage.getItem("rrqa_mechanics");
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveMechanics(mechanics) {
+  localStorage.setItem("rrqa_mechanics", JSON.stringify(mechanics));
+}
+
+/**
+ * Ensures we have at least a demo "admin-approved" mechanic
+ * so the portal is testable immediately without an admin UI.
+ */
+function ensureMechanicSeed() {
+  const existing = loadMechanics();
+  if (existing.length > 0) return;
+  const demo = {
+    id: "mech_demo",
+    email: "mechanic.demo@example.com",
+    name: "Demo Mechanic",
+    phone: "",
+    location: { baseCity: "Chennai", lat: 13.0827, lng: 80.2707 },
+    approved: true,
+    createdAt: new Date().toISOString(),
+    financials: {
+      prepaidBalance: 0,
+      incomeTotal: 0,
+      feesTotal: 0,
+      ledger: [],
+    },
+  };
+  saveMechanics([demo]);
+}
+
+/**
+ * PUBLIC_INTERFACE
+ * Returns whether a mechanic is logged in and approved.
+ */
+function isMechanicApprovedAuthed() {
+  const s = loadMechanicSession();
+  return Boolean(s?.mechanicId && s?.approved === true);
+}
+
+function getMechanicById(mechanicId) {
+  return loadMechanics().find((m) => m.id === mechanicId) || null;
+}
+
+function upsertMechanic(nextMechanic) {
+  const all = loadMechanics();
+  const idx = all.findIndex((m) => m.id === nextMechanic.id);
+  const now = new Date().toISOString();
+  const normalized = { ...nextMechanic, updatedAt: now };
+  if (idx === -1) return saveMechanics([normalized, ...all]);
+  all[idx] = normalized;
+  return saveMechanics(all);
+}
+
+function addMechanicLedgerEntry(mechanicId, entry) {
+  const mech = getMechanicById(mechanicId);
+  if (!mech) return;
+
+  const ledger = Array.isArray(mech.financials?.ledger) ? mech.financials.ledger : [];
+  const nextLedger = [{ id: generateId("tx"), createdAt: new Date().toISOString(), ...entry }, ...ledger];
+
+  const prepaidBalance = Number(mech.financials?.prepaidBalance || 0);
+  const incomeTotal = Number(mech.financials?.incomeTotal || 0);
+  const feesTotal = Number(mech.financials?.feesTotal || 0);
+
+  let nextFinancials = { ...(mech.financials || {}) };
+
+  if (entry.type === "prepaid_add") nextFinancials.prepaidBalance = prepaidBalance + Number(entry.amount || 0);
+  if (entry.type === "income") nextFinancials.incomeTotal = incomeTotal + Number(entry.amount || 0);
+  if (entry.type === "fee") nextFinancials.feesTotal = feesTotal + Number(entry.amount || 0);
+
+  nextFinancials.ledger = nextLedger;
+
+  upsertMechanic({ ...mech, financials: nextFinancials });
+}
+
+function getStatusBadgeClass(status) {
+  const s = String(status || "").toUpperCase();
+  if (s === "OPEN") return "rr-badge-open";
+  if (s === "ASSIGNED") return "rr-badge-assigned";
+  if (s === "COMPLETED") return "rr-badge-completed";
+  return "rr-badge-open";
+}
+
 function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
 
   const [authUser, setAuthUser] = useState(() => loadAuthUser());
+  const [mechanicSession, setMechanicSession] = useState(() => loadMechanicSession());
   const [alerts, setAlerts] = useState([]);
 
   const [notifPermission, setNotifPermission] = useState(() => getNotificationPermissionState());
 
   const authed = Boolean(authUser);
+  const mechAuthedApproved = Boolean(mechanicSession?.mechanicId && mechanicSession?.approved);
+  const onMechanicPages = location.pathname.startsWith("/mechanic");
+
+  useEffect(() => {
+    ensureMechanicSeed();
+  }, []);
 
   const addAlert = (type, message) => {
     setAlerts((prev) => [{ id: `${Date.now()}_${Math.random()}`, type, message }, ...prev].slice(0, 6));
@@ -276,20 +401,36 @@ function AppShell() {
     navigate("/login");
   };
 
+  const onMechanicLogout = () => {
+    clearMechanicSession();
+    setMechanicSession(null);
+    addAlert("info", "Mechanic logged out.");
+    navigate("/mechanic/login");
+  };
+
   const navItems = useMemo(() => {
-    // Matches screenshots: Submit Request + My Requests visible.
-    // For unauth users, keep About/Register/Login.
+    // Keep existing user-side nav, add a visible "Mechanic Portal" entry for discoverability.
     if (authed) {
       return [
         { to: "/submit-request", label: "Submit Request" },
         { to: "/my-requests", label: "My Requests" },
+        { to: "/mechanic", label: "Mechanic Portal" },
       ];
     }
     return [
       { to: "/about", label: "About" },
       { to: "/register", label: "Register" },
+      { to: "/mechanic", label: "Mechanic Portal" },
     ];
   }, [authed]);
+
+  const mechanicNavItems = useMemo(() => {
+    return [
+      { to: "/mechanic/dashboard", label: "Dashboard" },
+      { to: "/mechanic/assignments", label: "My Assignments" },
+      { to: "/mechanic/profile", label: "Profile" },
+    ];
+  }, []);
 
   const notifLabel = useMemo(() => {
     if (notifPermission === "granted") return "Notifications: On";
@@ -298,6 +439,12 @@ function AppShell() {
     if (notifPermission === "unsupported") return "Notifications: Unsupported";
     return "Notifications";
   }, [notifPermission]);
+
+  const mechanicIdentityLabel = useMemo(() => {
+    if (!mechanicSession?.mechanicId) return "";
+    const mech = getMechanicById(mechanicSession.mechanicId);
+    return mech?.email || mechanicSession.mechanicId;
+  }, [mechanicSession?.mechanicId]);
 
   return (
     <div className="rr-app">
@@ -313,7 +460,8 @@ function AppShell() {
           </div>
 
           <nav className="rr-nav" aria-label="Primary">
-            {navItems.map((item) => (
+            {/* When inside mechanic portal, switch to mechanic-specific nav items for a clear portal feel */}
+            {(onMechanicPages ? mechanicNavItems : navItems).map((item) => (
               <Link
                 key={item.to}
                 to={item.to}
@@ -335,7 +483,8 @@ function AppShell() {
               {notifLabel}
             </button>
 
-            {authed ? (
+            {/* User-side session chip */}
+            {!onMechanicPages && authed ? (
               <>
                 <div className="rr-userChip" title={authUser?.email || "User"}>
                   <span className="rr-userDot" aria-hidden="true" />
@@ -345,11 +494,36 @@ function AppShell() {
                   Logout
                 </button>
               </>
-            ) : (
+            ) : null}
+
+            {/* Mechanic-side session chip */}
+            {onMechanicPages && mechanicSession?.mechanicId ? (
+              <>
+                <div className="rr-userChip" title={mechanicIdentityLabel || "Mechanic"}>
+                  <span className="rr-userDot" aria-hidden="true" />
+                  <span className="rr-userText">
+                    {mechanicIdentityLabel}
+                    {!mechAuthedApproved ? " (pending)" : ""}
+                  </span>
+                </div>
+                <button className="rr-linkButton" onClick={onMechanicLogout} type="button">
+                  Logout
+                </button>
+              </>
+            ) : null}
+
+            {/* If not authed on current portal, show the appropriate login link */}
+            {!onMechanicPages && !authed ? (
               <Link className="rr-linkButton" to="/login">
                 Login
               </Link>
-            )}
+            ) : null}
+
+            {onMechanicPages && !mechanicSession?.mechanicId ? (
+              <Link className="rr-linkButton" to="/mechanic/login">
+                Mechanic Login
+              </Link>
+            ) : null}
           </div>
         </div>
       </header>
@@ -369,6 +543,7 @@ function AppShell() {
           <Routes>
             <Route path="/" element={<Navigate to={authed ? "/submit-request" : "/login"} replace />} />
 
+            {/* User-side routes */}
             <Route
               path="/login"
               element={
@@ -415,13 +590,12 @@ function AppShell() {
                     addAlert={addAlert}
                     onRequestCreated={async (created) => {
                       addAlert("success", `Request created: ${created.id}`);
-                      // Scaffolding: attempt a browser notification; if not possible, in-app alert already added.
                       const res = await tryNotify({
                         title: "RoadRescue",
                         body: `Your request ${created.id} is OPEN.`,
                       });
                       if (!res.ok) {
-                        // keep silent; UI already shows an in-app confirmation
+                        // silent; in-app already confirmed
                       }
                       navigate("/my-requests");
                     }}
@@ -451,6 +625,108 @@ function AppShell() {
                   />
                 ) : (
                   <Navigate to="/login" replace />
+                )
+              }
+            />
+
+            {/* Mechanic portal routes */}
+            <Route path="/mechanic" element={<Navigate to="/mechanic/login" replace />} />
+
+            <Route path="/mechanic/about" element={<MechanicAboutPage />} />
+
+            <Route
+              path="/mechanic/login"
+              element={
+                isMechanicApprovedAuthed() ? (
+                  <Navigate to="/mechanic/dashboard" replace />
+                ) : (
+                  <MechanicLoginPage
+                    addAlert={addAlert}
+                    onLoggedIn={(session, opts) => {
+                      setMechanicSession(session);
+                      if (session?.approved) {
+                        addAlert("success", `Welcome${session?.email ? `, ${session.email}` : ""}.`);
+                        if (opts?.usedGoogle) addAlert("info", "Google sign-in is stubbed for MVP UI; integrate Supabase later.");
+                        navigate("/mechanic/dashboard");
+                        return;
+                      }
+                      addAlert(
+                        "info",
+                        "Registration/login received, but this mechanic account is not approved yet. Please wait for admin approval."
+                      );
+                      navigate("/mechanic/pending");
+                    }}
+                  />
+                )
+              }
+            />
+
+            <Route
+              path="/mechanic/register"
+              element={
+                <MechanicRegisterPage
+                  addAlert={addAlert}
+                  onRegistered={(result) => {
+                    if (result?.pending) {
+                      addAlert(
+                        "info",
+                        "Mechanic registered and sent for admin approval. You’ll be able to login once approved."
+                      );
+                      navigate("/mechanic/pending");
+                      return;
+                    }
+                    addAlert("success", "Mechanic account created and approved.");
+                    navigate("/mechanic/login");
+                  }}
+                />
+              }
+            />
+
+            <Route
+              path="/mechanic/pending"
+              element={<MechanicPendingApprovalPage addAlert={addAlert} mechanicSession={mechanicSession} />}
+            />
+
+            <Route
+              path="/mechanic/dashboard"
+              element={
+                isMechanicApprovedAuthed() ? (
+                  <MechanicDashboardPage mechanicSession={mechanicSession} addAlert={addAlert} />
+                ) : (
+                  <Navigate to="/mechanic/login" replace />
+                )
+              }
+            />
+
+            <Route
+              path="/mechanic/assignments"
+              element={
+                isMechanicApprovedAuthed() ? (
+                  <MechanicAssignmentsPage mechanicSession={mechanicSession} addAlert={addAlert} />
+                ) : (
+                  <Navigate to="/mechanic/login" replace />
+                )
+              }
+            />
+
+            <Route
+              path="/mechanic/profile"
+              element={
+                isMechanicApprovedAuthed() ? (
+                  <MechanicProfilePage mechanicSession={mechanicSession} addAlert={addAlert} />
+                ) : (
+                  <Navigate to="/mechanic/login" replace />
+                )
+              }
+            />
+
+            <Route
+              path="/mechanic/requests/:id"
+              element={
+                isMechanicApprovedAuthed() ? (
+                  <MechanicRequestDetailPage mechanicSession={mechanicSession} addAlert={addAlert} />
+                ) : (
+                  <Navigate to="/mechanic/login" replace />
                 )
               }
             />
@@ -564,6 +840,14 @@ function LoginPage({ onLoggedIn, addAlert }) {
               Need an account? Register
             </Link>
           </div>
+
+          <div className="rr-divider" />
+          <div className="rr-mutedSmall">
+            Are you a mechanic?{" "}
+            <Link className="rr-textLink" to="/mechanic/login">
+              Go to Mechanic Portal
+            </Link>
+          </div>
         </form>
       </div>
     </section>
@@ -656,11 +940,11 @@ function AboutPage() {
           <li>Status updates and notifications are scaffolded for future API integration.</li>
         </ul>
 
-        <h2 className="rr-h2">Coming Soon</h2>
+        <h2 className="rr-h2">Mechanic Portal</h2>
         <ul className="rr-list">
-          <li>Mechanic portal: accept/assign jobs and set status to “Assigned / On the way / Completed”.</li>
-          <li>Real Google OAuth via Supabase.</li>
-          <li>Server-driven push notifications and request history.</li>
+          <li>Mechanics can register and then wait for admin approval before accessing requests.</li>
+          <li>Approved mechanics can accept OPEN requests (status becomes ASSIGNED), then complete them.</li>
+          <li>Dashboard includes simple filters by make/model/location text and status.</li>
         </ul>
       </div>
     </section>
@@ -809,7 +1093,7 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
         lat,
         lng,
       },
-      // Scaffolding fields for future mechanic assignment & notifications
+      // Scaffolding fields for mechanic assignment
       assignment: {
         mechanicId: null,
         mechanicName: null,
@@ -1092,7 +1376,7 @@ function MyRequestsPage({ authUser }) {
                 </div>
 
                 <div role="cell">
-                  <span className={`rr-badge rr-badge-${String(r.status || "").toLowerCase()}`}>{r.status}</span>
+                  <span className={`rr-badge ${getStatusBadgeClass(r.status)}`}>{r.status}</span>
                 </div>
 
                 <div role="cell" className="rr-mutedSmall">
@@ -1236,7 +1520,7 @@ function RequestDetailPage({ authUser, addAlert, onStatusSimulated }) {
           <div className="rr-kv">
             <div className="rr-k">Status</div>
             <div className="rr-v">
-              <span className={`rr-badge rr-badge-${String(request.status || "").toLowerCase()}`}>{request.status}</span>
+              <span className={`rr-badge ${getStatusBadgeClass(request.status)}`}>{request.status}</span>
             </div>
           </div>
 
@@ -1327,6 +1611,1139 @@ function RequestDetailPage({ authUser, addAlert, onStatusSimulated }) {
   );
 }
 
+/** -----------------------------
+ * Mechanic Portal Pages
+ * ------------------------------*/
+
+function MechanicAboutPage() {
+  return (
+    <section className="rr-page">
+      <div className="rr-pageHeader">
+        <h1 className="rr-title">About Mechanic Portal</h1>
+        <div className="rr-subtitle">
+          A dedicated workspace for approved mechanics to accept breakdown jobs, manage assignments, and track earnings.
+        </div>
+      </div>
+
+      <div className="rr-card rr-contentCard">
+        <h2 className="rr-h2">How it works (MVP)</h2>
+        <ul className="rr-list">
+          <li>Register as a mechanic → your profile becomes “Pending approval”.</li>
+          <li>After admin approves your account, you can access the Dashboard and accept jobs.</li>
+          <li>Accepting a job updates the request to ASSIGNED and attaches your mechanic ID.</li>
+          <li>Completing updates it to COMPLETED and moves it into your history.</li>
+        </ul>
+
+        <h2 className="rr-h2">Notes</h2>
+        <ul className="rr-list">
+          <li>No backend yet — admin approval is mocked in localStorage.</li>
+          <li>Dashboard filters are client-side and based on request fields.</li>
+          <li>Map uses the existing MapView component to show breakdown location.</li>
+        </ul>
+
+        <div className="rr-divider" />
+        <div className="rr-actions">
+          <Link className="rr-btn rr-btnPrimary" to="/mechanic/login">
+            Mechanic Login
+          </Link>
+          <Link className="rr-btn rr-btnSecondary" to="/mechanic/register">
+            Register as mechanic
+          </Link>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function MechanicLoginPage({ addAlert, onLoggedIn }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  const [busy, setBusy] = useState(false);
+
+  const attemptLogin = (emailInput, opts) => {
+    const mechanics = loadMechanics();
+    const mech = mechanics.find((m) => String(m.email || "").toLowerCase() === String(emailInput || "").toLowerCase());
+
+    if (!mech) {
+      addAlert("error", "No mechanic account found for this email. Please register first.");
+      return;
+    }
+
+    if (!mech.approved) {
+      // Store a session but do NOT grant portal access.
+      const session = { mechanicId: mech.id, email: mech.email, approved: false };
+      saveMechanicSession(session);
+      onLoggedIn(session, opts);
+      return;
+    }
+
+    const session = { mechanicId: mech.id, email: mech.email, approved: true };
+    saveMechanicSession(session);
+    onLoggedIn(session, opts);
+  };
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      if (!email || !password) {
+        addAlert("error", "Please enter email and password.");
+        return;
+      }
+      attemptLogin(email, { usedGoogle: false });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const google = () => {
+    // MVP stub: no real OAuth yet.
+    const googleEmail = "mechanic.google@example.com";
+    attemptLogin(googleEmail, { usedGoogle: true });
+  };
+
+  return (
+    <section className="rr-page">
+      <div className="rr-pageHeader">
+        <h1 className="rr-title">Mechanic Login</h1>
+        <div className="rr-subtitle">Only admin-approved mechanics can access the dashboard and accept requests.</div>
+      </div>
+
+      <div className="rr-card rr-formCard">
+        <form onSubmit={submit}>
+          <Field label="Email">
+            <input
+              className="rr-input"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="mechanic@example.com"
+              autoComplete="email"
+            />
+          </Field>
+
+          <Field label="Password" hint="MVP demo only — not validated.">
+            <input
+              className="rr-input"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              autoComplete="current-password"
+            />
+          </Field>
+
+          <div className="rr-actions">
+            <button className="rr-btn rr-btnPrimary" type="submit" disabled={busy}>
+              {busy ? "Signing in..." : "Login"}
+            </button>
+
+            <button className="rr-btn rr-btnSecondary" type="button" onClick={google} disabled={busy}>
+              Sign in with Google
+            </button>
+
+            <Link className="rr-textLink" to="/mechanic/register">
+              New mechanic? Register
+            </Link>
+          </div>
+
+          <div className="rr-divider" />
+          <div className="rr-actions">
+            <Link className="rr-textLink" to="/mechanic/about">
+              About Mechanic Portal
+            </Link>
+            <Link className="rr-textLink" to="/login">
+              Back to User Login
+            </Link>
+          </div>
+
+          <div className="rr-mutedSmall rr-mt12">
+            Demo approved mechanic: <span className="rr-mono">mechanic.demo@example.com</span>
+          </div>
+        </form>
+      </div>
+    </section>
+  );
+}
+
+function MechanicRegisterPage({ addAlert, onRegistered }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+
+  const [baseCity, setBaseCity] = useState("");
+  const [lat, setLat] = useState("");
+  const [lng, setLng] = useState("");
+
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      if (!email || !password) {
+        addAlert("error", "Please enter email and password.");
+        return;
+      }
+      if (!name) {
+        addAlert("error", "Please enter your name.");
+        return;
+      }
+
+      const existing = loadMechanics().find((m) => String(m.email || "").toLowerCase() === email.toLowerCase());
+      if (existing) {
+        addAlert("error", "A mechanic account already exists for this email. Please login.");
+        return;
+      }
+
+      const parsedLat = lat === "" ? null : Number(lat);
+      const parsedLng = lng === "" ? null : Number(lng);
+
+      const newMechanic = {
+        id: generateId("mech"),
+        email,
+        name,
+        phone,
+        approved: false, // admin gating: default is pending
+        createdAt: new Date().toISOString(),
+        location: {
+          baseCity: baseCity || "",
+          lat: Number.isFinite(parsedLat) ? parsedLat : null,
+          lng: Number.isFinite(parsedLng) ? parsedLng : null,
+        },
+        financials: {
+          prepaidBalance: 0,
+          incomeTotal: 0,
+          feesTotal: 0,
+          ledger: [],
+        },
+      };
+
+      saveMechanics([newMechanic, ...loadMechanics()]);
+      onRegistered({ pending: true });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="rr-page">
+      <div className="rr-pageHeader">
+        <h1 className="rr-title">Mechanic Register</h1>
+        <div className="rr-subtitle">Register to be reviewed by admin. You can login only after approval.</div>
+      </div>
+
+      <div className="rr-card rr-formCard">
+        <form onSubmit={submit}>
+          <div className="rr-sectionTitle">Account</div>
+          <div className="rr-grid2">
+            <Field label="Email *">
+              <input
+                className="rr-input"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="mechanic@example.com"
+                autoComplete="email"
+                required
+              />
+            </Field>
+
+            <Field label="Password *" hint="MVP demo only — stored nowhere.">
+              <input
+                className="rr-input"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Create a password"
+                autoComplete="new-password"
+                required
+              />
+            </Field>
+          </div>
+
+          <div className="rr-divider" />
+
+          <div className="rr-sectionTitle">Profile</div>
+          <div className="rr-grid2">
+            <Field label="Full name *">
+              <input
+                className="rr-input"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Your name"
+                required
+              />
+            </Field>
+
+            <Field label="Phone" hint="Optional">
+              <input className="rr-input" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+1..." />
+            </Field>
+          </div>
+
+          <div className="rr-divider" />
+
+          <div className="rr-sectionTitle">Location (for filtering)</div>
+          <div className="rr-grid2">
+            <Field label="Base city" hint="Optional">
+              <input
+                className="rr-input"
+                value={baseCity}
+                onChange={(e) => setBaseCity(e.target.value)}
+                placeholder="e.g. Chennai"
+              />
+            </Field>
+
+            <Field label="Coordinates" hint="Optional (lat/lng).">
+              <div className="rr-row">
+                <input
+                  className="rr-input rr-grow"
+                  value={lat}
+                  onChange={(e) => setLat(e.target.value)}
+                  placeholder="lat"
+                  inputMode="decimal"
+                />
+                <input
+                  className="rr-input rr-grow"
+                  value={lng}
+                  onChange={(e) => setLng(e.target.value)}
+                  placeholder="lng"
+                  inputMode="decimal"
+                />
+              </div>
+            </Field>
+          </div>
+
+          <div className="rr-actions rr-actionsBetween rr-actionsEnd">
+            <button className="rr-btn rr-btnPrimary" type="submit" disabled={busy}>
+              {busy ? "Submitting..." : "Register (send for approval)"}
+            </button>
+
+            <Link className="rr-btn rr-btnSecondary" to="/mechanic/login">
+              Back to login
+            </Link>
+          </div>
+        </form>
+      </div>
+    </section>
+  );
+}
+
+function MechanicPendingApprovalPage({ mechanicSession }) {
+  const mechanics = useMemo(() => loadMechanics(), []);
+  const myMechanic = useMemo(() => {
+    if (!mechanicSession?.mechanicId) return null;
+    return mechanics.find((m) => m.id === mechanicSession.mechanicId) || null;
+  }, [mechanicSession?.mechanicId, mechanics]);
+
+  return (
+    <section className="rr-page">
+      <div className="rr-pageHeader">
+        <h1 className="rr-title">Pending admin approval</h1>
+        <div className="rr-subtitle">
+          Your mechanic account must be approved by admin before you can access requests.
+        </div>
+      </div>
+
+      <div className="rr-card rr-contentCard">
+        <div className="rr-kvGrid">
+          <div className="rr-kv">
+            <div className="rr-k">Status</div>
+            <div className="rr-v">
+              <span className="rr-badge rr-badge-open">PENDING</span>
+            </div>
+          </div>
+          <div className="rr-kv">
+            <div className="rr-k">Account</div>
+            <div className="rr-v">{myMechanic?.email || "Not logged in (register first)"}</div>
+          </div>
+        </div>
+
+        <div className="rr-divider" />
+
+        <div className="rr-mutedSmall">
+          For this MVP, admin approval is mocked. Once approved, you will be able to log in and access the mechanic
+          dashboard.
+        </div>
+
+        <div className="rr-actions rr-actionsEnd">
+          <Link className="rr-btn rr-btnPrimary" to="/mechanic/login">
+            Back to mechanic login
+          </Link>
+          <Link className="rr-btn rr-btnSecondary" to="/mechanic/about">
+            About
+          </Link>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function MechanicDashboardPage({ mechanicSession, addAlert }) {
+  const [filters, setFilters] = useState({
+    status: "OPEN",
+    make: "",
+    model: "",
+    location: "",
+  });
+
+  const [requests, setRequests] = useState(() => loadRequests());
+
+  useEffect(() => {
+    let mounted = true;
+
+    const refresh = () => {
+      if (!mounted) return;
+      setRequests(loadRequests());
+    };
+
+    const onStorage = () => refresh();
+    window.addEventListener("storage", onStorage);
+    const interval = window.setInterval(refresh, 800);
+    refresh();
+
+    return () => {
+      mounted = false;
+      window.removeEventListener("storage", onStorage);
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  const mechanicId = mechanicSession?.mechanicId;
+  const mech = useMemo(() => (mechanicId ? getMechanicById(mechanicId) : null), [mechanicId]);
+
+  const filtered = useMemo(() => {
+    const makeF = String(filters.make || "").trim().toLowerCase();
+    const modelF = String(filters.model || "").trim().toLowerCase();
+    const locF = String(filters.location || "").trim().toLowerCase();
+    const statusF = String(filters.status || "").toUpperCase();
+
+    return requests
+      .filter((r) => {
+        if (statusF && String(r.status || "").toUpperCase() !== statusF) return false;
+        if (makeF && !String(r.vehicle?.make || "").toLowerCase().includes(makeF)) return false;
+        if (modelF && !String(r.vehicle?.model || "").toLowerCase().includes(modelF)) return false;
+
+        if (locF) {
+          const addr = String(r.location?.resolvedAddress || r.location?.addressText || "").toLowerCase();
+          if (addr.includes(locF)) return true;
+          const baseCity = String(mech?.location?.baseCity || "").toLowerCase();
+          // If mechanic typed their baseCity as the filter, accept it.
+          if (baseCity && baseCity.includes(locF)) return true;
+          return false;
+        }
+
+        return true;
+      })
+      .slice(0, 50);
+  }, [filters.location, filters.make, filters.model, filters.status, mech?.location?.baseCity, requests]);
+
+  const acceptRequest = async (requestId) => {
+    if (!mechanicId) return;
+
+    const all = loadRequests();
+    const idx = all.findIndex((x) => x.id === requestId);
+    if (idx === -1) return;
+
+    const r = all[idx];
+    if (String(r.status).toUpperCase() !== "OPEN") {
+      addAlert("error", "This request is not OPEN anymore.");
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const updated = {
+      ...r,
+      status: "ASSIGNED",
+      updatedAt: now,
+      assignment: {
+        ...(r.assignment || {}),
+        mechanicId,
+        mechanicName: mech?.name || mech?.email || "Mechanic",
+        acceptedAt: now,
+      },
+    };
+
+    all[idx] = updated;
+    saveRequests(all);
+
+    addAlert("success", `Accepted ${requestId}. Status changed to ASSIGNED.`);
+    await notifyOnceForStatus({
+      requestId,
+      nextStatus: "ASSIGNED",
+      title: "RoadRescue",
+      body: `A mechanic accepted your request ${requestId}.`,
+    });
+  };
+
+  const statusOptions = [
+    { value: "OPEN", label: "OPEN" },
+    { value: "ASSIGNED", label: "ASSIGNED" },
+    { value: "COMPLETED", label: "COMPLETED" },
+  ];
+
+  return (
+    <section className="rr-page">
+      <div className="rr-pageHeader">
+        <div className="rr-pageHeaderRow">
+          <div>
+            <h1 className="rr-title">Mechanic Dashboard</h1>
+            <div className="rr-subtitle">Browse requests and accept jobs. Filters help you focus on relevant work.</div>
+          </div>
+          <Link className="rr-btn rr-btnSecondary" to="/mechanic/about">
+            About
+          </Link>
+        </div>
+      </div>
+
+      <div className="rr-card rr-formCard">
+        <div className="rr-sectionTitle">Filters</div>
+        <div className="rr-grid2">
+          <Field label="Status">
+            <select
+              className="rr-input"
+              value={filters.status}
+              onChange={(e) => setFilters((prev) => ({ ...prev, status: e.target.value }))}
+            >
+              {statusOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field label="Make" hint="Filter by vehicle make">
+            <input
+              className="rr-input"
+              value={filters.make}
+              onChange={(e) => setFilters((prev) => ({ ...prev, make: e.target.value }))}
+              placeholder="e.g. Toyota"
+            />
+          </Field>
+
+          <Field label="Model" hint="Filter by vehicle model">
+            <input
+              className="rr-input"
+              value={filters.model}
+              onChange={(e) => setFilters((prev) => ({ ...prev, model: e.target.value }))}
+              placeholder="e.g. Corolla"
+            />
+          </Field>
+
+          <Field label="Location" hint="Search address/resolved location text">
+            <input
+              className="rr-input"
+              value={filters.location}
+              onChange={(e) => setFilters((prev) => ({ ...prev, location: e.target.value }))}
+              placeholder="e.g. London / Chennai / Main St"
+            />
+          </Field>
+        </div>
+      </div>
+
+      <div className="rr-card rr-tableCard">
+        <div className="rr-tableWrap" role="table" aria-label="Mechanic requests table">
+          <div className="rr-tableHeader" role="row">
+            <div role="columnheader">Request ID</div>
+            <div role="columnheader">Vehicle</div>
+            <div role="columnheader">Status</div>
+            <div role="columnheader">Location</div>
+            <div role="columnheader" className="rr-right">
+              Actions
+            </div>
+          </div>
+
+          {filtered.length === 0 ? (
+            <div className="rr-empty">
+              <div className="rr-emptyTitle">No requests match</div>
+              <div className="rr-mutedSmall">Adjust filters to see more results.</div>
+            </div>
+          ) : (
+            filtered.map((r) => {
+              const status = String(r.status || "").toUpperCase();
+              const canAccept = status === "OPEN";
+              const assignedToMe = status === "ASSIGNED" && r.assignment?.mechanicId === mechanicId;
+              const locationLabel = r.location?.resolvedAddress || r.location?.addressText || "-";
+
+              return (
+                <div className="rr-tableRow" role="row" key={r.id}>
+                  <div role="cell" className="rr-mono">
+                    <Link className="rr-textLink" to={`/mechanic/requests/${r.id}`}>
+                      {r.id}
+                    </Link>
+                  </div>
+
+                  <div role="cell">
+                    <div>
+                      {r.vehicle?.make} {r.vehicle?.model} {r.vehicle?.year ? `(${r.vehicle.year})` : ""}
+                    </div>
+                    <div className="rr-mutedSmall">{r.vehicle?.licensePlate ? `Plate: ${r.vehicle.licensePlate}` : ""}</div>
+                  </div>
+
+                  <div role="cell">
+                    <span className={`rr-badge ${getStatusBadgeClass(status)}`}>{status}</span>
+                    {assignedToMe ? <div className="rr-mutedSmall rr-mt8">Assigned to you</div> : null}
+                  </div>
+
+                  <div role="cell">
+                    <div className="rr-mutedSmall">{locationLabel}</div>
+                  </div>
+
+                  <div role="cell" className="rr-right">
+                    <div className="rr-actions rr-actionsEnd">
+                      <Link className="rr-btn rr-btnSmall rr-btnSecondary" to={`/mechanic/requests/${r.id}`}>
+                        View
+                      </Link>
+                      <button
+                        type="button"
+                        className="rr-btn rr-btnSmall rr-btnPrimary"
+                        onClick={() => acceptRequest(r.id)}
+                        disabled={!canAccept}
+                        title={canAccept ? "Accept this request" : "Only OPEN requests can be accepted"}
+                      >
+                        Accept
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function MechanicAssignmentsPage({ mechanicSession }) {
+  const mechanicId = mechanicSession?.mechanicId;
+  const [requests, setRequests] = useState(() => loadRequests());
+
+  useEffect(() => {
+    let mounted = true;
+
+    const refresh = () => {
+      if (!mounted) return;
+      setRequests(loadRequests());
+    };
+
+    const onStorage = () => refresh();
+    window.addEventListener("storage", onStorage);
+    const interval = window.setInterval(refresh, 800);
+    refresh();
+
+    return () => {
+      mounted = false;
+      window.removeEventListener("storage", onStorage);
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  const my = useMemo(() => {
+    return requests
+      .filter((r) => r.assignment?.mechanicId === mechanicId)
+      .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")));
+  }, [mechanicId, requests]);
+
+  return (
+    <section className="rr-page">
+      <div className="rr-pageHeader">
+        <h1 className="rr-title">My Assignments</h1>
+        <div className="rr-subtitle">Your accepted jobs, including completed history.</div>
+      </div>
+
+      <div className="rr-card rr-tableCard">
+        <div className="rr-tableWrap" role="table" aria-label="Assignments table">
+          <div className="rr-tableHeader" role="row">
+            <div role="columnheader">Request ID</div>
+            <div role="columnheader">Vehicle</div>
+            <div role="columnheader">Status</div>
+            <div role="columnheader">Updated</div>
+            <div role="columnheader" className="rr-right">
+              Actions
+            </div>
+          </div>
+
+          {my.length === 0 ? (
+            <div className="rr-empty">
+              <div className="rr-emptyTitle">No assignments yet</div>
+              <div className="rr-mutedSmall">Accept a request from the Dashboard to see it here.</div>
+            </div>
+          ) : (
+            my.map((r) => (
+              <div className="rr-tableRow" role="row" key={r.id}>
+                <div role="cell" className="rr-mono">
+                  <Link className="rr-textLink" to={`/mechanic/requests/${r.id}`}>
+                    {r.id}
+                  </Link>
+                </div>
+
+                <div role="cell">
+                  <div>
+                    {r.vehicle?.make} {r.vehicle?.model} {r.vehicle?.year ? `(${r.vehicle.year})` : ""}
+                  </div>
+                  <div className="rr-mutedSmall">{r.vehicle?.licensePlate ? `Plate: ${r.vehicle.licensePlate}` : ""}</div>
+                </div>
+
+                <div role="cell">
+                  <span className={`rr-badge ${getStatusBadgeClass(r.status)}`}>{r.status}</span>
+                </div>
+
+                <div role="cell" className="rr-mutedSmall">
+                  {r.updatedAt ? new Date(r.updatedAt).toLocaleString() : "-"}
+                </div>
+
+                <div role="cell" className="rr-right">
+                  <Link className="rr-btn rr-btnSmall rr-btnSecondary" to={`/mechanic/requests/${r.id}`}>
+                    View
+                  </Link>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function MechanicRequestDetailPage({ mechanicSession, addAlert }) {
+  const { id } = useParams();
+  const navigate = useNavigate();
+
+  const mechanicId = mechanicSession?.mechanicId;
+  const mech = useMemo(() => (mechanicId ? getMechanicById(mechanicId) : null), [mechanicId]);
+
+  const [request, setRequest] = useState(() => loadRequests().find((x) => x.id === id) || null);
+
+  useEffect(() => {
+    const r = loadRequests().find((x) => x.id === id);
+    setRequest(r || null);
+  }, [id]);
+
+  if (!request) {
+    return (
+      <section className="rr-page">
+        <div className="rr-pageHeader">
+          <h1 className="rr-title">Request not found</h1>
+          <div className="rr-subtitle">The request ID you opened does not exist in local storage.</div>
+        </div>
+        <Link className="rr-textLink" to="/mechanic/dashboard">
+          Back to dashboard
+        </Link>
+      </section>
+    );
+  }
+
+  const status = String(request.status || "").toUpperCase();
+  const assignedToMe = request.assignment?.mechanicId === mechanicId;
+  const canAccept = status === "OPEN";
+  const canComplete = status === "ASSIGNED" && assignedToMe;
+
+  const accept = async () => {
+    if (!mechanicId) return;
+    if (!canAccept) {
+      addAlert("error", "Only OPEN requests can be accepted.");
+      return;
+    }
+
+    const all = loadRequests();
+    const idx = all.findIndex((x) => x.id === id);
+    if (idx === -1) return;
+
+    const now = new Date().toISOString();
+    const updated = {
+      ...all[idx],
+      status: "ASSIGNED",
+      updatedAt: now,
+      assignment: {
+        ...(all[idx].assignment || {}),
+        mechanicId,
+        mechanicName: mech?.name || mech?.email || "Mechanic",
+        acceptedAt: now,
+      },
+    };
+
+    all[idx] = updated;
+    saveRequests(all);
+    setRequest(updated);
+
+    addAlert("success", "Request accepted. Status changed to ASSIGNED.");
+
+    await notifyOnceForStatus({
+      requestId: id,
+      nextStatus: "ASSIGNED",
+      title: "RoadRescue",
+      body: `A mechanic accepted your request ${id}.`,
+    });
+  };
+
+  const complete = async () => {
+    if (!canComplete) {
+      addAlert("error", "You can only complete requests assigned to you.");
+      return;
+    }
+
+    const all = loadRequests();
+    const idx = all.findIndex((x) => x.id === id);
+    if (idx === -1) return;
+
+    const now = new Date().toISOString();
+    const updated = {
+      ...all[idx],
+      status: "COMPLETED",
+      updatedAt: now,
+      assignment: {
+        ...(all[idx].assignment || {}),
+        completedAt: now,
+      },
+    };
+
+    all[idx] = updated;
+    saveRequests(all);
+    setRequest(updated);
+
+    addAlert("success", "Job marked COMPLETED.");
+
+    await notifyOnceForStatus({
+      requestId: id,
+      nextStatus: "COMPLETED",
+      title: "RoadRescue",
+      body: `Your service for request ${id} has been completed.`,
+    });
+
+    // Optional: keep mechanic on the detail page, but offer quick back.
+  };
+
+  const storedLat = request.location?.lat;
+  const storedLng = request.location?.lng;
+
+  return (
+    <section className="rr-page">
+      <div className="rr-pageHeader">
+        <h1 className="rr-title">Request {request.id}</h1>
+        <div className="rr-subtitle">Review issue details and location. Accept or complete based on assignment.</div>
+      </div>
+
+      <div className="rr-card rr-contentCard">
+        <div className="rr-kvGrid">
+          <div className="rr-kv">
+            <div className="rr-k">Status</div>
+            <div className="rr-v">
+              <span className={`rr-badge ${getStatusBadgeClass(status)}`}>{status}</span>
+            </div>
+          </div>
+
+          <div className="rr-kv">
+            <div className="rr-k">Assigned</div>
+            <div className="rr-v">
+              {request.assignment?.mechanicName
+                ? `${request.assignment.mechanicName}${assignedToMe ? " (you)" : ""}`
+                : "Not assigned"}
+            </div>
+          </div>
+
+          <div className="rr-kv">
+            <div className="rr-k">Created</div>
+            <div className="rr-v">{request.createdAt ? new Date(request.createdAt).toLocaleString() : "-"}</div>
+          </div>
+
+          <div className="rr-kv">
+            <div className="rr-k">Vehicle</div>
+            <div className="rr-v">
+              {request.vehicle?.make} {request.vehicle?.model} {request.vehicle?.year ? `(${request.vehicle.year})` : ""}{" "}
+              {request.vehicle?.licensePlate ? `• ${request.vehicle.licensePlate}` : ""}
+            </div>
+          </div>
+
+          <div className="rr-kv">
+            <div className="rr-k">Contact</div>
+            <div className="rr-v">
+              {request.contact?.name} {request.contact?.phone ? `• ${request.contact.phone}` : ""}
+            </div>
+          </div>
+        </div>
+
+        <div className="rr-divider" />
+
+        <div className="rr-kv">
+          <div className="rr-k">Issue description</div>
+          <div className="rr-v rr-pre">{request.issueDescription}</div>
+        </div>
+
+        <div className="rr-divider" />
+
+        <div className="rr-kv">
+          <div className="rr-k">Breakdown location</div>
+          <div className="rr-v">
+            {request.location?.resolvedAddress || request.location?.addressText || "-"}{" "}
+            {typeof storedLat === "number" && typeof storedLng === "number" ? `(${formatLatLng(storedLat, storedLng)})` : ""}
+          </div>
+        </div>
+
+        <div className="rr-mutedSmall rr-mt8">Map below shows the breakdown location for this request.</div>
+        <div className="rr-mt12">
+          {/* Mechanic portal specifically requested MapView integration */}
+          <MapView lat={typeof storedLat === "number" ? storedLat : null} lng={typeof storedLng === "number" ? storedLng : null} />
+        </div>
+
+        <div className="rr-divider" />
+
+        <div className="rr-actions rr-actionsBetween">
+          <button className="rr-btn rr-btnSecondary" type="button" onClick={() => navigate(-1)}>
+            Back
+          </button>
+
+          <div className="rr-actions">
+            <button className="rr-btn rr-btnSecondary" type="button" onClick={accept} disabled={!canAccept}>
+              Accept
+            </button>
+            <button className="rr-btn rr-btnPrimary" type="button" onClick={complete} disabled={!canComplete}>
+              Mark completed
+            </button>
+          </div>
+        </div>
+
+        {!assignedToMe && status === "ASSIGNED" ? (
+          <div className="rr-mutedSmall rr-mt12">
+            This request is already assigned to another mechanic. You can still view details, but cannot complete it.
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function MechanicProfilePage({ mechanicSession, addAlert }) {
+  const mechanicId = mechanicSession?.mechanicId;
+  const [mech, setMech] = useState(() => (mechanicId ? getMechanicById(mechanicId) : null));
+
+  const [name, setName] = useState(mech?.name || "");
+  const [phone, setPhone] = useState(mech?.phone || "");
+  const [baseCity, setBaseCity] = useState(mech?.location?.baseCity || "");
+
+  const [prepaidAdd, setPrepaidAdd] = useState("");
+  const [incomeAdd, setIncomeAdd] = useState("");
+  const [feeAdd, setFeeAdd] = useState("");
+
+  const [ledgerFilter, setLedgerFilter] = useState("all"); // all | prepaid_add | income | fee
+
+  useEffect(() => {
+    const latest = mechanicId ? getMechanicById(mechanicId) : null;
+    setMech(latest);
+    setName(latest?.name || "");
+    setPhone(latest?.phone || "");
+    setBaseCity(latest?.location?.baseCity || "");
+  }, [mechanicId]);
+
+  const saveProfile = () => {
+    if (!mech) return;
+    upsertMechanic({
+      ...mech,
+      name: String(name || "").trim(),
+      phone: String(phone || "").trim(),
+      location: { ...(mech.location || {}), baseCity: String(baseCity || "").trim() },
+    });
+    setMech(getMechanicById(mechanicId));
+    addAlert("success", "Profile updated.");
+  };
+
+  const addMoney = (type) => {
+    if (!mechanicId) return;
+
+    const raw =
+      type === "prepaid_add" ? prepaidAdd : type === "income" ? incomeAdd : type === "fee" ? feeAdd : "";
+    const amt = Number(raw);
+
+    if (!Number.isFinite(amt) || amt <= 0) {
+      addAlert("error", "Enter a valid amount greater than 0.");
+      return;
+    }
+
+    addMechanicLedgerEntry(mechanicId, { type, amount: amt, note: "" });
+
+    if (type === "prepaid_add") setPrepaidAdd("");
+    if (type === "income") setIncomeAdd("");
+    if (type === "fee") setFeeAdd("");
+
+    setMech(getMechanicById(mechanicId));
+    addAlert("success", "Entry added.");
+  };
+
+  const financials = mech?.financials || { prepaidBalance: 0, incomeTotal: 0, feesTotal: 0, ledger: [] };
+  const ledger = Array.isArray(financials.ledger) ? financials.ledger : [];
+
+  const filteredLedger = useMemo(() => {
+    if (ledgerFilter === "all") return ledger;
+    return ledger.filter((x) => x.type === ledgerFilter);
+  }, [ledger, ledgerFilter]);
+
+  return (
+    <section className="rr-page">
+      <div className="rr-pageHeader">
+        <h1 className="rr-title">Mechanic Profile</h1>
+        <div className="rr-subtitle">Manage your personal details and track prepaid, income, and fees.</div>
+      </div>
+
+      <div className="rr-card rr-formCard">
+        <div className="rr-sectionTitle">Personal details</div>
+        <div className="rr-grid2">
+          <Field label="Full name">
+            <input className="rr-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" />
+          </Field>
+          <Field label="Phone">
+            <input className="rr-input" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+1..." />
+          </Field>
+          <Field label="Base city" hint="Used for your own reference and filtering">
+            <input
+              className="rr-input"
+              value={baseCity}
+              onChange={(e) => setBaseCity(e.target.value)}
+              placeholder="e.g. Chennai"
+            />
+          </Field>
+          <Field label="Email">
+            <input className="rr-input" value={mech?.email || ""} readOnly />
+          </Field>
+        </div>
+
+        <div className="rr-actions rr-actionsEnd">
+          <button className="rr-btn rr-btnPrimary" type="button" onClick={saveProfile}>
+            Save profile
+          </button>
+        </div>
+
+        <div className="rr-divider" />
+
+        <div className="rr-sectionTitle">Finance overview</div>
+        <div className="rr-kvGrid">
+          <div className="rr-kv">
+            <div className="rr-k">Prepaid balance</div>
+            <div className="rr-v">{formatMoney(financials.prepaidBalance)}</div>
+          </div>
+          <div className="rr-kv">
+            <div className="rr-k">Income total</div>
+            <div className="rr-v">{formatMoney(financials.incomeTotal)}</div>
+          </div>
+          <div className="rr-kv">
+            <div className="rr-k">Fees total</div>
+            <div className="rr-v">{formatMoney(financials.feesTotal)}</div>
+          </div>
+        </div>
+
+        <div className="rr-divider" />
+
+        <div className="rr-sectionTitle">Add entries</div>
+        <div className="rr-grid2">
+          <Field label="Add prepaid" hint="Adds to prepaid balance">
+            <div className="rr-row">
+              <input
+                className="rr-input rr-grow"
+                value={prepaidAdd}
+                onChange={(e) => setPrepaidAdd(e.target.value)}
+                placeholder="Amount"
+                inputMode="decimal"
+              />
+              <button className="rr-btn rr-btnSecondary rr-btnCompact" type="button" onClick={() => addMoney("prepaid_add")}>
+                Add
+              </button>
+            </div>
+          </Field>
+
+          <Field label="Add income" hint="Adds to total income">
+            <div className="rr-row">
+              <input
+                className="rr-input rr-grow"
+                value={incomeAdd}
+                onChange={(e) => setIncomeAdd(e.target.value)}
+                placeholder="Amount"
+                inputMode="decimal"
+              />
+              <button className="rr-btn rr-btnSecondary rr-btnCompact" type="button" onClick={() => addMoney("income")}>
+                Add
+              </button>
+            </div>
+          </Field>
+
+          <Field label="Add fee" hint="Adds to total fees paid">
+            <div className="rr-row">
+              <input
+                className="rr-input rr-grow"
+                value={feeAdd}
+                onChange={(e) => setFeeAdd(e.target.value)}
+                placeholder="Amount"
+                inputMode="decimal"
+              />
+              <button className="rr-btn rr-btnSecondary rr-btnCompact" type="button" onClick={() => addMoney("fee")}>
+                Add
+              </button>
+            </div>
+          </Field>
+
+          <Field label="Filter ledger">
+            <select className="rr-input" value={ledgerFilter} onChange={(e) => setLedgerFilter(e.target.value)}>
+              <option value="all">All</option>
+              <option value="prepaid_add">Prepaid</option>
+              <option value="income">Income</option>
+              <option value="fee">Fees</option>
+            </select>
+          </Field>
+        </div>
+
+        <div className="rr-divider" />
+
+        <div className="rr-sectionTitle">Ledger</div>
+        {filteredLedger.length === 0 ? (
+          <div className="rr-empty">
+            <div className="rr-emptyTitle">No entries</div>
+            <div className="rr-mutedSmall">Add prepaid, income, or fees to build your history.</div>
+          </div>
+        ) : (
+          <div className="rr-card rr-tableCard" style={{ boxShadow: "none" }}>
+            <div className="rr-tableWrap" role="table" aria-label="Ledger table">
+              <div className="rr-tableHeader" role="row">
+                <div role="columnheader">Type</div>
+                <div role="columnheader">Amount</div>
+                <div role="columnheader">Created</div>
+                <div role="columnheader">Note</div>
+                <div role="columnheader" className="rr-right">
+                  ID
+                </div>
+              </div>
+
+              {filteredLedger.slice(0, 50).map((x) => (
+                <div className="rr-tableRow" role="row" key={x.id}>
+                  <div role="cell" style={{ fontWeight: 800 }}>
+                    {x.type}
+                  </div>
+                  <div role="cell">{formatMoney(Number(x.amount || 0))}</div>
+                  <div role="cell" className="rr-mutedSmall">
+                    {x.createdAt ? new Date(x.createdAt).toLocaleString() : "-"}
+                  </div>
+                  <div role="cell" className="rr-mutedSmall">
+                    {x.note || "-"}
+                  </div>
+                  <div role="cell" className="rr-right rr-mutedSmall rr-mono">
+                    {x.id}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="rr-mutedSmall rr-mt12">
+          Note: These finance numbers are MVP-only and stored locally in your browser.
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function NotFoundPage() {
   return (
     <section className="rr-page">
@@ -1345,7 +2762,7 @@ function NotFoundPage() {
 function App() {
   /**
    * Root entry point. Wraps the app with React Router for navigation.
-   * Returns: The RoadRescue user-side MVP interface.
+   * Returns: The RoadRescue user-side + mechanic portal MVP interface.
    */
   const [ready, setReady] = useState(false);
 
