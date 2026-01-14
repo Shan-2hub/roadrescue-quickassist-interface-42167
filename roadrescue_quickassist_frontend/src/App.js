@@ -834,11 +834,29 @@ function MyRequestsPage({ authUser }) {
   );
 
   useEffect(() => {
-    const onStorage = () => {
+    let mounted = true;
+
+    const refresh = () => {
+      if (!mounted) return;
       setRequests(loadRequests().filter((r) => r.userId === (authUser?.id || "unknown")));
     };
+
+    // Cross-tab updates (fires in other tabs/windows)
+    const onStorage = () => refresh();
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+
+    // Same-tab updates: localStorage writes do NOT trigger "storage" in the same tab.
+    // For MVP simulation, a lightweight polling keeps the list accurate without additional infra.
+    const interval = window.setInterval(refresh, 800);
+
+    // Initial refresh on mount, so returning from detail reflects latest status instantly.
+    refresh();
+
+    return () => {
+      mounted = false;
+      window.removeEventListener("storage", onStorage);
+      window.clearInterval(interval);
+    };
   }, [authUser?.id]);
 
   return (
