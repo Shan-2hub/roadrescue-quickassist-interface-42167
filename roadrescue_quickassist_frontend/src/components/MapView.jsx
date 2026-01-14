@@ -71,6 +71,10 @@ export default function MapView({
     const map = L.map(mapDivId, {
       zoomControl: true,
       scrollWheelZoom: false,
+      // Allow pinch-zoom on touch devices.
+      touchZoom: true,
+      // Keep drag enabled; Leaflet internally handles multi-touch vs drag.
+      dragging: true,
     }).setView([center.lat, center.lng], zoom);
 
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {

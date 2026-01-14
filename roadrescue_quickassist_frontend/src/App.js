@@ -902,7 +902,7 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
                 required
               />
             </Field>
-            <Field label="Contact phone number *">
+            <Field label="Contact number *">
               <input
                 className="rr-input"
                 value={contactPhone}
@@ -920,7 +920,7 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
             left={
               <>
                 <Field label="Breakdown address *" hint="Enter an address and click “Find location” to resolve coordinates.">
-                  <div className="rr-row rr-rowTop">
+                  <div className="rr-row rr-rowTop rr-addressRow">
                     <div className="rr-grow">
                       <input
                         ref={locationInputRef}
@@ -998,10 +998,14 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
             right={<MapView lat={typeof lat === "number" ? lat : null} lng={typeof lng === "number" ? lng : null} />}
           />
 
-          <div className="rr-actions rr-actionsEnd">
+          <div className="rr-actions rr-actionsBetween rr-actionsEnd">
             <button className="rr-btn rr-btnPrimary" type="submit">
               Submit request
             </button>
+
+            <Link className="rr-btn rr-btnSecondary" to="/my-requests">
+              View requests
+            </Link>
           </div>
         </form>
       </div>
@@ -1060,6 +1064,7 @@ function MyRequestsPage({ authUser }) {
             <div role="columnheader">Request ID</div>
             <div role="columnheader">Vehicle</div>
             <div role="columnheader">Status</div>
+            <div role="columnheader">Created</div>
             <div role="columnheader" className="rr-right">
               Actions
             </div>
@@ -1077,7 +1082,6 @@ function MyRequestsPage({ authUser }) {
                   <Link className="rr-textLink" to={`/requests/${r.id}`}>
                     {r.id}
                   </Link>
-                  <div className="rr-mutedSmall">{new Date(r.createdAt).toLocaleString()}</div>
                 </div>
 
                 <div role="cell">
@@ -1089,6 +1093,10 @@ function MyRequestsPage({ authUser }) {
 
                 <div role="cell">
                   <span className={`rr-badge rr-badge-${String(r.status || "").toLowerCase()}`}>{r.status}</span>
+                </div>
+
+                <div role="cell" className="rr-mutedSmall">
+                  {r.createdAt ? new Date(r.createdAt).toLocaleString() : "-"}
                 </div>
 
                 <div role="cell" className="rr-right">

@@ -475,9 +475,29 @@ body {
 
 /* Find Location should read like a primary CTA, similar to Submit */
 .rr-btnFindLocation {
-  padding: 10px 14px;
-  font-size: 13px;
+  padding: 12px 18px;
+  font-size: 14px;
   border-radius: 12px;
+}
+
+/* Make address input panel slightly narrower compared to the button (desktop/tablet). */
+.rr-addressRow .rr-grow {
+  flex: 0 1 72%;
+}
+
+/* Ensure mobile stays stacked and full width. */
+@media (max-width: 680px) {
+  .rr-addressRow .rr-grow {
+    flex: 1 1 auto;
+  }
+}
+
+/*
+  Allow Leaflet to handle pinch-zoom and panning on touch devices.
+  Without this, the browser may capture touch gestures and prevent map zoom.
+*/
+.rr-leafletHost {
+  touch-action: pan-x pan-y;
 }
 
 @media (max-width: 680px) {
@@ -514,7 +534,7 @@ body {
 .rr-tableHeader,
 .rr-tableRow {
   display: grid;
-  grid-template-columns: 1.2fr 1.3fr 0.8fr 0.7fr;
+  grid-template-columns: 1.1fr 1.3fr 0.8fr 0.9fr 0.7fr;
   gap: 12px;
   align-items: center;
 }
@@ -689,7 +709,7 @@ body {
   }
   .rr-tableHeader,
   .rr-tableRow {
-    grid-template-columns: 1.2fr 1.2fr 0.9fr 0.7fr;
+    grid-template-columns: 1.1fr 1.2fr 0.9fr 0.9fr 0.7fr;
   }
 }
 
