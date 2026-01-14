@@ -443,6 +443,37 @@ body {
   margin-top: 8px;
 }
 
+/* Location input helpers */
+.rr-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.rr-rowTop {
+  align-items: flex-start;
+}
+
+.rr-grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.rr-btnCompact {
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-weight: 800;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+@media (max-width: 680px) {
+  .rr-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
 .rr-actionsEnd {
   justify-content: flex-end;
   margin-top: 14px;
@@ -572,6 +603,12 @@ body {
   padding: 0;
   overflow: hidden;
   border-radius: var(--rr-radius);
+}
+
+/* Leaflet needs its container to have an explicit height. */
+.rr-mapCard .leaflet-container {
+  width: 100%;
+  height: 320px;
 }
 
 .rr-mapFrame {

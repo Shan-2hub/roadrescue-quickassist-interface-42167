@@ -10,6 +10,7 @@ import {
   useNavigate,
   useParams,
 } from "react-router-dom";
+import { LocationMap } from "./components/LocationMap";
 
 const APP_TITLE = "RoadRescue";
 
@@ -22,8 +23,46 @@ function generateId() {
 }
 
 function formatLatLng(lat, lng) {
-  if (typeof lat !== "number" || typeof lng !== "number") return "";
+  if (typeof lat !== "number" || !Number.isFinite(lat) || typeof lng !== "number" || !Number.isFinite(lng)) return "";
   return `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+}
+
+/**
+ * PUBLIC_INTERFACE
+ * Geocode an address via the public OpenStreetMap Nominatim API.
+ *
+ * Note: Nominatim usage policy discourages heavy traffic. This MVP uses direct client-side fetch.
+ * Params:
+ * - address: string
+ * Returns: { lat: number, lon: number, displayName: string }
+ */
+async function geocodeAddress(address) {
+  const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}`;
+
+  const response = await fetch(url, {
+    headers: {
+      // Nominatim requests a valid User-Agent; browsers restrict custom UA header in some environments.
+      // Leaving this header here documents intent; it may be ignored by the browser runtime.
+      "User-Agent": "RoadRescue-MVP/1.0",
+      Accept: "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Geocoding failed (${response.status})`);
+  }
+
+  const data = await response.json();
+
+  if (!data || data.length === 0) {
+    throw new Error("Address not found");
+  }
+
+  return {
+    lat: parseFloat(data[0].lat),
+    lon: parseFloat(data[0].lon),
+    displayName: data[0].display_name,
+  };
 }
 
 /**
@@ -173,44 +212,6 @@ function saveAuthUser(user) {
 
 function clearAuthUser() {
   localStorage.removeItem("rrqa_auth_user");
-}
-
-/**
- * Minimal MVP "map" card:
- * - Shows an embedded OpenStreetMap if lat/lng exist.
- * - Otherwise shows a placeholder panel.
- */
-function MapEmbed({ lat, lng }) {
-  const hasCoords = typeof lat === "number" && typeof lng === "number";
-  const src = useMemo(() => {
-    if (!hasCoords) return "";
-    // Use OpenStreetMap embed. This is not a precise pin but provides contextual map.
-    const delta = 0.02;
-    const left = lng - delta;
-    const right = lng + delta;
-    const top = lat + delta;
-    const bottom = lat - delta;
-    return `https://www.openstreetmap.org/export/embed.html?bbox=${left}%2C${bottom}%2C${right}%2C${top}&layer=mapnik&marker=${lat}%2C${lng}`;
-  }, [hasCoords, lat, lng]);
-
-  return (
-    <div className="rr-card rr-mapCard" aria-label="Map">
-      {hasCoords ? (
-        <iframe
-          title="Breakdown location map"
-          className="rr-mapFrame"
-          src={src}
-          loading="lazy"
-          referrerPolicy="no-referrer"
-        />
-      ) : (
-        <div className="rr-mapPlaceholder">
-          <div className="rr-muted">No location selected yet.</div>
-          <div className="rr-mutedSmall">Use “Use my location” to pin your breakdown location.</div>
-        </div>
-      )}
-    </div>
-  );
 }
 
 function AppShell() {
@@ -677,25 +678,50 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
   const [contactName, setContactName] = useState("");
   const [contactPhone, setContactPhone] = useState("");
 
-  // Address text is shown to the user; for MVP it can be either a real address (future)
-  // or a raw "lat,lng" string. We keep pinned breakdown coordinates separately.
   const [addressText, setAddressText] = useState("");
+  const [resolvedAddress, setResolvedAddress] = useState("");
   const [lat, setLat] = useState(null);
   const [lng, setLng] = useState(null);
 
   const [locating, setLocating] = useState(false);
+  const [geocoding, setGeocoding] = useState(false);
 
   const locationInputRef = useRef(null);
 
-  const onAddressChange = (next) => {
-    setAddressText(next);
+  const handleFindLocation = async () => {
+    const addr = String(addressText || "").trim();
+    if (!addr) {
+      addAlert("error", "Please enter an address to find.");
+      return;
+    }
 
-    // If the user types coordinates, keep the pinned breakdown location in sync
-    // so the map "under it" updates immediately (per screenshot/instructions).
-    const parsed = parseLatLng(next);
+    // If user pasted coordinates, accept them directly.
+    const parsed = parseLatLng(addr);
     if (parsed) {
       setLat(parsed.lat);
       setLng(parsed.lng);
+      setResolvedAddress("");
+      addAlert("success", "Coordinates parsed from input.");
+      return;
+    }
+
+    setGeocoding(true);
+    try {
+      const loc = await geocodeAddress(addr);
+      if (!Number.isFinite(loc.lat) || !Number.isFinite(loc.lon)) {
+        throw new Error("Geocoder returned invalid coordinates");
+      }
+      setLat(loc.lat);
+      setLng(loc.lon);
+      setResolvedAddress(loc.displayName || "");
+      addAlert("success", "Location found.");
+    } catch (err) {
+      addAlert("error", "Could not find location. Please enter a valid address.");
+    } finally {
+      setGeocoding(false);
+      requestAnimationFrame(() => {
+        locationInputRef.current?.focus?.();
+      });
     }
   };
 
@@ -711,14 +737,13 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
         const la = pos.coords.latitude;
         const lo = pos.coords.longitude;
 
-        // This pins the breakdown location and updates the map.
         setLat(la);
         setLng(lo);
 
-        // Keep the address bar populated with coordinates for the MVP.
+        // Keep input populated with coordinates (MVP) while also showing a resolved label.
         setAddressText(formatLatLng(la, lo));
+        setResolvedAddress("Current GPS location");
 
-        // Keep focus in the address field (matches screenshot UX expectation)
         requestAnimationFrame(() => {
           locationInputRef.current?.focus?.();
         });
@@ -750,7 +775,7 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
       return;
     }
     if (typeof lat !== "number" || typeof lng !== "number") {
-      addAlert("error", "Please set your location using the Address field or 'Use my location'.");
+      addAlert("error", "Please set your location using the address + Find location, or 'Use my location'.");
       return;
     }
 
@@ -760,7 +785,7 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
       createdAt: now,
       updatedAt: now,
       userId: authUser?.id || "unknown",
-      status: "OPEN", // initial status (matches requirement)
+      status: "OPEN",
       vehicle: {
         make: vehicleMake,
         model: vehicleModel,
@@ -775,6 +800,7 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
       },
       location: {
         addressText,
+        resolvedAddress,
         lat,
         lng,
       },
@@ -890,37 +916,76 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
           <TwoCol
             left={
               <>
-                <Field label="Address" hint="For MVP, paste coordinates like: 12.3456, 78.9012 — or use the button below.">
-                  <input
-                    ref={locationInputRef}
-                    className="rr-input"
-                    value={addressText}
-                    onChange={(e) => onAddressChange(e.target.value)}
-                    placeholder="Latitude, Longitude"
-                  />
+                <Field label="Breakdown address" hint="Enter an address and click “Find location” to resolve coordinates.">
+                  <div className="rr-row rr-rowTop">
+                    <div className="rr-grow">
+                      <input
+                        ref={locationInputRef}
+                        className="rr-input"
+                        value={addressText}
+                        onChange={(e) => setAddressText(e.target.value)}
+                        placeholder="e.g. 10 Downing St, London"
+                      />
+                      {resolvedAddress ? <div className="rr-mutedSmall rr-mt8">Resolved: {resolvedAddress}</div> : null}
+                    </div>
+
+                    <button
+                      className="rr-btn rr-btnSecondary rr-btnCompact"
+                      type="button"
+                      onClick={handleFindLocation}
+                      disabled={geocoding}
+                      title="Geocode address via OpenStreetMap Nominatim"
+                    >
+                      {geocoding ? "Finding..." : "Find location"}
+                    </button>
+                  </div>
                 </Field>
 
-                <div className="rr-locationMeta" aria-label="Pinned breakdown coordinates">
-                  <div className="rr-metaRow">
-                    <span className="rr-metaLabel">Latitude</span>
-                    <span className="rr-metaValue">{typeof lat === "number" ? lat.toFixed(6) : "-"}</span>
-                  </div>
-                  <div className="rr-metaRow">
-                    <span className="rr-metaLabel">Longitude</span>
-                    <span className="rr-metaValue">{typeof lng === "number" ? lng.toFixed(6) : "-"}</span>
-                  </div>
+                <div className="rr-grid2">
+                  <Field label="Latitude">
+                    <input
+                      className="rr-input"
+                      value={typeof lat === "number" ? String(lat) : ""}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        const num = next === "" ? null : Number(next);
+                        setLat(Number.isFinite(num) ? num : null);
+                      }}
+                      placeholder="Latitude"
+                      inputMode="decimal"
+                    />
+                  </Field>
+
+                  <Field label="Longitude">
+                    <input
+                      className="rr-input"
+                      value={typeof lng === "number" ? String(lng) : ""}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        const num = next === "" ? null : Number(next);
+                        setLng(Number.isFinite(num) ? num : null);
+                      }}
+                      placeholder="Longitude"
+                      inputMode="decimal"
+                    />
+                  </Field>
                 </div>
 
-                <button className="rr-btn rr-btnPrimary rr-btnWide" type="button" onClick={useMyLocation} disabled={locating}>
-                  {locating ? "Locating..." : "Use my location"}
-                </button>
-
-                <div className="rr-mutedSmall rr-mt8">
-                  Tip: This will pin the map to your current breakdown location (browser permission required).
+                <div className="rr-actions">
+                  <button
+                    className="rr-btn rr-btnPrimary rr-btnCompact"
+                    type="button"
+                    onClick={useMyLocation}
+                    disabled={locating}
+                    title="Use browser GPS to set your location"
+                  >
+                    {locating ? "Locating..." : "Use my location"}
+                  </button>
+                  <div className="rr-mutedSmall">Pins the map to your current breakdown location (browser permission required).</div>
                 </div>
               </>
             }
-            right={<MapEmbed lat={lat} lng={lng} />}
+            right={<LocationMap lat={lat} lon={lng} />}
           />
 
           <div className="rr-actions rr-actionsEnd">
@@ -1038,33 +1103,10 @@ function RequestDetailPage({ authUser, addAlert, onStatusSimulated }) {
     return r || null;
   });
 
-  // Detail view requirement: show map of the user's CURRENT location (not the original pinned breakdown location).
-  const [currentLat, setCurrentLat] = useState(null);
-  const [currentLng, setCurrentLng] = useState(null);
-  const [locError, setLocError] = useState(null);
-
   useEffect(() => {
     const r = loadRequests().find((x) => x.id === id);
     setRequest(r || null);
   }, [id]);
-
-  useEffect(() => {
-    if (!("geolocation" in navigator)) {
-      setLocError("Geolocation is not supported in this browser.");
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setCurrentLat(pos.coords.latitude);
-        setCurrentLng(pos.coords.longitude);
-        setLocError(null);
-      },
-      (err) => {
-        setLocError(err?.message || "Unable to fetch your current location.");
-      },
-      { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
-    );
-  }, []);
 
   const canView = request && request.userId === (authUser?.id || "unknown");
 
@@ -1161,6 +1203,9 @@ function RequestDetailPage({ authUser, addAlert, onStatusSimulated }) {
     );
   }
 
+  const storedLat = request.location?.lat;
+  const storedLng = request.location?.lng;
+
   return (
     <section className="rr-page">
       <div className="rr-pageHeader">
@@ -1213,27 +1258,16 @@ function RequestDetailPage({ authUser, addAlert, onStatusSimulated }) {
         <div className="rr-divider" />
 
         <div className="rr-kv">
-          <div className="rr-k">Submitted breakdown location (from request)</div>
+          <div className="rr-k">Breakdown location</div>
           <div className="rr-v">
-            {request.location?.addressText || "-"}{" "}
-            {typeof request.location?.lat === "number" && typeof request.location?.lng === "number"
-              ? `(${formatLatLng(request.location.lat, request.location.lng)})`
-              : ""}
+            {request.location?.resolvedAddress || request.location?.addressText || "-"}{" "}
+            {typeof storedLat === "number" && typeof storedLng === "number" ? `(${formatLatLng(storedLat, storedLng)})` : ""}
           </div>
         </div>
 
-        <div className="rr-divider" />
-
-        <div className="rr-kv">
-          <div className="rr-k">Your current location (live)</div>
-          <div className="rr-v">{locError ? <span className="rr-muted">{locError}</span> : formatLatLng(currentLat, currentLng) || "-"}</div>
-        </div>
-
-        <div className="rr-mutedSmall rr-mt8">
-          Map below shows your current location right now (not the original pinned breakdown point).
-        </div>
+        <div className="rr-mutedSmall rr-mt8">Map below shows the breakdown location submitted with this request.</div>
         <div className="rr-mt12">
-          <MapEmbed lat={currentLat} lng={currentLng} />
+          <LocationMap lat={storedLat} lon={storedLng} />
         </div>
 
         <div className="rr-divider" />
