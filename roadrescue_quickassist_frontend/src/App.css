@@ -369,6 +369,12 @@ body {
   margin-bottom: 12px;
 }
 
+/* Slightly more compact panel for the "Use my location" helper section */
+.rr-locationMetaCompact {
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
 .rr-metaRow {
   display: flex;
   align-items: center;
@@ -465,6 +471,13 @@ body {
   font-weight: 800;
   font-size: 12px;
   white-space: nowrap;
+}
+
+/* Find Location should read like a primary CTA, similar to Submit */
+.rr-btnFindLocation {
+  padding: 10px 14px;
+  font-size: 13px;
+  border-radius: 12px;
 }
 
 @media (max-width: 680px) {

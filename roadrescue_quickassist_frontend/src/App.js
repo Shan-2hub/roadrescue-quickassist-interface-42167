@@ -670,7 +670,6 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
   const [vehicleMake, setVehicleMake] = useState("");
   const [vehicleModel, setVehicleModel] = useState("");
   const [vehicleYear, setVehicleYear] = useState("");
-  const [vehicleBody, setVehicleBody] = useState("");
   const [licensePlate, setLicensePlate] = useState("");
 
   const [issueDescription, setIssueDescription] = useState("");
@@ -766,16 +765,22 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
   const submit = async (e) => {
     e.preventDefault();
 
-    if (!vehicleMake || !vehicleModel || !vehicleYear || !licensePlate || !issueDescription) {
-      addAlert("error", "Please fill vehicle details and issue description.");
+    // Required per instructions (year optional):
+    // - make, model, license plate, issue description, contact name, contact phone, location.
+    if (!vehicleMake || !vehicleModel || !licensePlate) {
+      addAlert("error", "Please fill required vehicle details (make, model, license plate).");
+      return;
+    }
+    if (!issueDescription) {
+      addAlert("error", "Please describe the issue.");
       return;
     }
     if (!contactName || !contactPhone) {
-      addAlert("error", "Please fill contact details.");
+      addAlert("error", "Please fill contact name and phone number.");
       return;
     }
-    if (typeof lat !== "number" || typeof lng !== "number") {
-      addAlert("error", "Please set your location using the address + Find location, or 'Use my location'.");
+    if (!addressText || typeof lat !== "number" || typeof lng !== "number") {
+      addAlert("error", "Please enter an address and click “Find location” (or use “Use my location”).");
       return;
     }
 
@@ -790,7 +795,6 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
         make: vehicleMake,
         model: vehicleModel,
         year: vehicleYear,
-        body: vehicleBody,
         licensePlate,
       },
       issueDescription,
@@ -832,23 +836,25 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
         <form onSubmit={submit}>
           <div className="rr-sectionTitle">Vehicle details</div>
           <div className="rr-grid2">
-            <Field label="Make">
+            <Field label="Make *">
               <input
                 className="rr-input"
                 value={vehicleMake}
                 onChange={(e) => setVehicleMake(e.target.value)}
                 placeholder="e.g. Toyota"
+                required
               />
             </Field>
-            <Field label="Model">
+            <Field label="Model *">
               <input
                 className="rr-input"
                 value={vehicleModel}
                 onChange={(e) => setVehicleModel(e.target.value)}
                 placeholder="e.g. Corolla"
+                required
               />
             </Field>
-            <Field label="Year">
+            <Field label="Year" hint="Optional">
               <input
                 className="rr-input"
                 value={vehicleYear}
@@ -857,20 +863,13 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
                 inputMode="numeric"
               />
             </Field>
-            <Field label="Body">
-              <input
-                className="rr-input"
-                value={vehicleBody}
-                onChange={(e) => setVehicleBody(e.target.value)}
-                placeholder="e.g. Sedan"
-              />
-            </Field>
-            <Field label="License Plate">
+            <Field label="License Plate *">
               <input
                 className="rr-input"
                 value={licensePlate}
                 onChange={(e) => setLicensePlate(e.target.value)}
                 placeholder="e.g. ABC-1234"
+                required
               />
             </Field>
           </div>
@@ -878,13 +877,14 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
           <div className="rr-divider" />
 
           <div className="rr-sectionTitle">Issue</div>
-          <Field label="Issue description">
+          <Field label="Issue description *">
             <textarea
               className="rr-textarea"
               value={issueDescription}
               onChange={(e) => setIssueDescription(e.target.value)}
               placeholder="Describe the issue (e.g., flat tire, engine won’t start, battery dead...)"
               rows={4}
+              required
             />
           </Field>
 
@@ -892,20 +892,22 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
 
           <div className="rr-sectionTitle">Contact</div>
           <div className="rr-grid2">
-            <Field label="Contact name">
+            <Field label="Contact name *">
               <input
                 className="rr-input"
                 value={contactName}
                 onChange={(e) => setContactName(e.target.value)}
                 placeholder="Your name"
+                required
               />
             </Field>
-            <Field label="Contact phone number">
+            <Field label="Contact phone number *">
               <input
                 className="rr-input"
                 value={contactPhone}
                 onChange={(e) => setContactPhone(e.target.value)}
                 placeholder="+1 555 555 5555"
+                required
               />
             </Field>
           </div>
@@ -916,7 +918,7 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
           <TwoCol
             left={
               <>
-                <Field label="Breakdown address" hint="Enter an address and click “Find location” to resolve coordinates.">
+                <Field label="Breakdown address *" hint="Enter an address and click “Find location” to resolve coordinates.">
                   <div className="rr-row rr-rowTop">
                     <div className="rr-grow">
                       <input
@@ -925,12 +927,13 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
                         value={addressText}
                         onChange={(e) => setAddressText(e.target.value)}
                         placeholder="e.g. 10 Downing St, London"
+                        required
                       />
                       {resolvedAddress ? <div className="rr-mutedSmall rr-mt8">Resolved: {resolvedAddress}</div> : null}
                     </div>
 
                     <button
-                      className="rr-btn rr-btnSecondary rr-btnCompact"
+                      className="rr-btn rr-btnPrimary rr-btnCompact rr-btnFindLocation"
                       type="button"
                       onClick={handleFindLocation}
                       disabled={geocoding}
@@ -942,7 +945,7 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
                 </Field>
 
                 <div className="rr-grid2">
-                  <Field label="Latitude">
+                  <Field label="Latitude *">
                     <input
                       className="rr-input"
                       value={typeof lat === "number" ? String(lat) : ""}
@@ -953,10 +956,11 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
                       }}
                       placeholder="Latitude"
                       inputMode="decimal"
+                      required
                     />
                   </Field>
 
-                  <Field label="Longitude">
+                  <Field label="Longitude *">
                     <input
                       className="rr-input"
                       value={typeof lng === "number" ? String(lng) : ""}
@@ -967,21 +971,26 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
                       }}
                       placeholder="Longitude"
                       inputMode="decimal"
+                      required
                     />
                   </Field>
                 </div>
 
-                <div className="rr-actions">
-                  <button
-                    className="rr-btn rr-btnPrimary rr-btnCompact"
-                    type="button"
-                    onClick={useMyLocation}
-                    disabled={locating}
-                    title="Use browser GPS to set your location"
-                  >
-                    {locating ? "Locating..." : "Use my location"}
-                  </button>
-                  <div className="rr-mutedSmall">Pins the map to your current breakdown location (browser permission required).</div>
+                <div className="rr-locationMeta rr-locationMetaCompact">
+                  <div className="rr-actions rr-actionsBetween">
+                    <button
+                      className="rr-btn rr-btnSecondary rr-btnCompact"
+                      type="button"
+                      onClick={useMyLocation}
+                      disabled={locating}
+                      title="Use browser GPS to set your location"
+                    >
+                      {locating ? "Locating..." : "Use my location"}
+                    </button>
+                    <div className="rr-mutedSmall">
+                      Tip: you can also paste coordinates into the address box (e.g. “37.7749, -122.4194”).
+                    </div>
+                  </div>
                 </div>
               </>
             }
