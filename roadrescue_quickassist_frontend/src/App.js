@@ -27,6 +27,27 @@ function formatLatLng(lat, lng) {
 }
 
 /**
+ * Attempts to parse a "lat,lng" string into numeric coordinates.
+ * Accepts formats like:
+ *  - "12.34, 56.78"
+ *  - "12.34 56.78"
+ * Returns null if not parseable.
+ */
+function parseLatLng(text) {
+  if (!text) return null;
+  const cleaned = String(text).trim();
+  const parts = cleaned.split(/[\s,]+/).filter(Boolean);
+  if (parts.length < 2) return null;
+
+  const la = Number(parts[0]);
+  const lo = Number(parts[1]);
+  if (!Number.isFinite(la) || !Number.isFinite(lo)) return null;
+  if (la < -90 || la > 90 || lo < -180 || lo > 180) return null;
+
+  return { lat: la, lng: lo };
+}
+
+/**
  * PUBLIC_INTERFACE
  * Returns true when the user has a logged-in session in the MVP UI.
  * In this MVP, the session is stored in localStorage and is not backed by an API.
@@ -550,6 +571,8 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
   const [contactName, setContactName] = useState("");
   const [contactPhone, setContactPhone] = useState("");
 
+  // Address text is shown to the user; for MVP it can be either a real address (future)
+  // or a raw "lat,lng" string. We keep pinned breakdown coordinates separately.
   const [addressText, setAddressText] = useState("");
   const [lat, setLat] = useState(null);
   const [lng, setLng] = useState(null);
@@ -557,6 +580,18 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
   const [locating, setLocating] = useState(false);
 
   const locationInputRef = useRef(null);
+
+  const onAddressChange = (next) => {
+    setAddressText(next);
+
+    // If the user types coordinates, keep the pinned breakdown location in sync
+    // so the map "under it" updates immediately (per screenshot/instructions).
+    const parsed = parseLatLng(next);
+    if (parsed) {
+      setLat(parsed.lat);
+      setLng(parsed.lng);
+    }
+  };
 
   const useMyLocation = async () => {
     if (!("geolocation" in navigator)) {
@@ -569,13 +604,19 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
       (pos) => {
         const la = pos.coords.latitude;
         const lo = pos.coords.longitude;
+
+        // This pins the breakdown location and updates the map.
         setLat(la);
         setLng(lo);
+
+        // Keep the address bar populated with coordinates for the MVP.
         setAddressText(formatLatLng(la, lo));
+
         // Keep focus in the address field (matches screenshot UX expectation)
         requestAnimationFrame(() => {
           locationInputRef.current?.focus?.();
         });
+
         setLocating(false);
         addAlert("success", "Location updated.");
       },
@@ -660,10 +701,20 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
           <div className="rr-sectionTitle">Vehicle details</div>
           <div className="rr-grid2">
             <Field label="Make">
-              <input className="rr-input" value={vehicleMake} onChange={(e) => setVehicleMake(e.target.value)} placeholder="e.g. Toyota" />
+              <input
+                className="rr-input"
+                value={vehicleMake}
+                onChange={(e) => setVehicleMake(e.target.value)}
+                placeholder="e.g. Toyota"
+              />
             </Field>
             <Field label="Model">
-              <input className="rr-input" value={vehicleModel} onChange={(e) => setVehicleModel(e.target.value)} placeholder="e.g. Corolla" />
+              <input
+                className="rr-input"
+                value={vehicleModel}
+                onChange={(e) => setVehicleModel(e.target.value)}
+                placeholder="e.g. Corolla"
+              />
             </Field>
             <Field label="Year">
               <input
@@ -675,10 +726,20 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
               />
             </Field>
             <Field label="Body">
-              <input className="rr-input" value={vehicleBody} onChange={(e) => setVehicleBody(e.target.value)} placeholder="e.g. Sedan" />
+              <input
+                className="rr-input"
+                value={vehicleBody}
+                onChange={(e) => setVehicleBody(e.target.value)}
+                placeholder="e.g. Sedan"
+              />
             </Field>
             <Field label="License Plate">
-              <input className="rr-input" value={licensePlate} onChange={(e) => setLicensePlate(e.target.value)} placeholder="e.g. ABC-1234" />
+              <input
+                className="rr-input"
+                value={licensePlate}
+                onChange={(e) => setLicensePlate(e.target.value)}
+                placeholder="e.g. ABC-1234"
+              />
             </Field>
           </div>
 
@@ -700,10 +761,20 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
           <div className="rr-sectionTitle">Contact</div>
           <div className="rr-grid2">
             <Field label="Contact name">
-              <input className="rr-input" value={contactName} onChange={(e) => setContactName(e.target.value)} placeholder="Your name" />
+              <input
+                className="rr-input"
+                value={contactName}
+                onChange={(e) => setContactName(e.target.value)}
+                placeholder="Your name"
+              />
             </Field>
             <Field label="Contact phone number">
-              <input className="rr-input" value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} placeholder="+1 555 555 5555" />
+              <input
+                className="rr-input"
+                value={contactPhone}
+                onChange={(e) => setContactPhone(e.target.value)}
+                placeholder="+1 555 555 5555"
+              />
             </Field>
           </div>
 
@@ -713,17 +784,17 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
           <TwoCol
             left={
               <>
-                <Field label="Address" hint="For MVP, you can enter lat,lng or use the button below.">
+                <Field label="Address" hint="For MVP, paste coordinates like: 12.3456, 78.9012 — or use the button below.">
                   <input
                     ref={locationInputRef}
                     className="rr-input"
                     value={addressText}
-                    onChange={(e) => setAddressText(e.target.value)}
+                    onChange={(e) => onAddressChange(e.target.value)}
                     placeholder="Latitude, Longitude"
                   />
                 </Field>
 
-                <div className="rr-locationMeta">
+                <div className="rr-locationMeta" aria-label="Pinned breakdown coordinates">
                   <div className="rr-metaRow">
                     <span className="rr-metaLabel">Latitude</span>
                     <span className="rr-metaValue">{typeof lat === "number" ? lat.toFixed(6) : "-"}</span>
@@ -739,7 +810,7 @@ function SubmitRequestPage({ authUser, onRequestCreated, addAlert }) {
                 </button>
 
                 <div className="rr-mutedSmall rr-mt8">
-                  Tip: This will set the map to your current breakdown location (browser permission required).
+                  Tip: This will pin the map to your current breakdown location (browser permission required).
                 </div>
               </>
             }
